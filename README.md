@@ -1,3 +1,9 @@
+# Download ffmpeg and direct to it!
+
+![image](https://github.com/user-attachments/assets/cebcce53-a9f4-479e-851a-fd4df581a0bd)
+
+
+
 # 🔰 TIDAL Downloader Next Generation! (tidal-dl-ng)
 
 [![Release](https://img.shields.io/github/v/release/exislow/tidal-dl-ng)](https://img.shields.io/github/v/release/exislow/tidal-dl-ng)
