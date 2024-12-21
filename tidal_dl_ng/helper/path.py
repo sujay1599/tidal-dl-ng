@@ -1,8 +1,10 @@
 import math
 import os
+import pathlib
+import posixpath
 import re
 import sys
-from pathlib import Path, PosixPath
+from urllib.parse import unquote, urlsplit
 
 from pathvalidate import sanitize_filename, sanitize_filepath
 from pathvalidate.error import ValidationError
@@ -26,7 +28,10 @@ def path_home() -> str:
 
 
 def path_config_base() -> str:
-    path_config: str = ".config"
+    # https://wiki.archlinux.org/title/XDG_Base_Directory
+    # X11 workaround: If user specified config path is set, do not point to "~/.config"
+    path_user_custom: str = os.environ.get("XDG_CONFIG_HOME", "")
+    path_config: str = ".config" if not path_user_custom else ""
     path_base: str = os.path.join(path_home(), path_config, __name_display__)
 
     return path_base
@@ -44,7 +49,9 @@ def path_file_settings() -> str:
     return os.path.join(path_config_base(), "settings.json")
 
 
-def format_path_media(fmt_template: str, media: Track | Album | Playlist | UserPlaylist | Video | Mix) -> str:
+def format_path_media(
+    fmt_template: str, media: Track | Album | Playlist | UserPlaylist | Video | Mix, album_track_num_pad_min: int = 0
+) -> str:
     result = fmt_template
 
     # Search track format template for placeholder.
@@ -53,7 +60,7 @@ def format_path_media(fmt_template: str, media: Track | Album | Playlist | UserP
 
     for _matchNum, match in enumerate(matches, start=1):
         template_str = match.group()
-        result_fmt = format_str_media(match.group(1), media)
+        result_fmt = format_str_media(match.group(1), media, album_track_num_pad_min)
 
         if result_fmt != match.group(1):
             value = sanitize_filename(result_fmt)
@@ -62,16 +69,19 @@ def format_path_media(fmt_template: str, media: Track | Album | Playlist | UserP
     return result
 
 
-def format_str_media(name: str, media: Track | Album | Playlist | UserPlaylist | Video | Mix) -> str:  # noqa: C901
+def format_str_media(
+    name: str, media: Track | Album | Playlist | UserPlaylist | Video | Mix, album_track_num_pad_min: int = 0
+) -> str:
     result: str = name
 
     try:
         match name:
             case "artist_name":
-                if hasattr(media, "artists"):
-                    result = name_builder_artist(media)
-                elif hasattr(media, "artist"):
-                    result = media.artist.name
+                if isinstance(media, Track | Video):
+                    if hasattr(media, "artists"):
+                        result = name_builder_artist(media)
+                    elif hasattr(media, "artist"):
+                        result = media.artist.name
             case "album_artist":
                 result = name_builder_album_artist(media)
             case "track_title":
@@ -92,7 +102,10 @@ def format_str_media(name: str, media: Track | Album | Playlist | UserPlaylist |
                 if isinstance(media, Track | Video):
                     num_tracks: int = media.album.num_tracks if hasattr(media, "album") else 1
                     count_digits: int = int(math.log10(num_tracks)) + 1
-                    result = str(media.track_num).zfill(count_digits)
+                    count_digits_computed: int = (
+                        count_digits if count_digits > album_track_num_pad_min else album_track_num_pad_min
+                    )
+                    result = str(media.track_num).zfill(count_digits_computed)
             case "album_num_tracks":
                 if isinstance(media, Track | Video):
                     result = str(media.album.num_tracks if hasattr(media, "album") else 1)
@@ -151,6 +164,14 @@ def format_str_media(name: str, media: Track | Album | Playlist | UserPlaylist |
             case "track_volume_num":
                 if isinstance(media, Track | Video):
                     result = str(media.volume_num)
+            case "track_volume_num_optional":
+                if isinstance(media, Track | Video):
+                    num_volumes: int = media.album.num_volumes if hasattr(media, "album") else 1
+                    result = "" if num_volumes == 1 else str(media.volume_num)
+            case "track_volume_num_optional_CD":
+                if isinstance(media, Track | Video):
+                    num_volumes: int = media.album.num_volumes if hasattr(media, "album") else 1
+                    result = "" if num_volumes == 1 else f"CD{media.volume_num!s}"
     except Exception as e:
         # TODO: Implement better exception logging.
         print(e)
@@ -182,7 +203,7 @@ def get_format_template(
 def path_file_sanitize(path_file: str, adapt: bool = False, uniquify: bool = False) -> (bool, str):
     # Split into path and filename
     pathname, filename = os.path.split(path_file)
-    file_extension: str = Path(path_file).suffix
+    file_extension: str = pathlib.Path(path_file).suffix
 
     # Sanitize path
     try:
@@ -192,7 +213,7 @@ def path_file_sanitize(path_file: str, adapt: bool = False, uniquify: bool = Fal
     except ValidationError:
         # If adaption of path is allowed in case of an error set path to HOME.
         if adapt:
-            pathname_sanitized: str = Path.home()
+            pathname_sanitized: str = str(pathlib.Path.home())
         else:
             raise
 
@@ -259,10 +280,10 @@ def file_unique_suffix(path_file: str, seperator: str = "_") -> str:
     return unique_suffix
 
 
-def check_file_exists(path_file: str, extension_ignore: bool = False) -> bool:
+def check_file_exists(path_file: pathlib.Path, extension_ignore: bool = False) -> bool:
     if extension_ignore:
-        path_file_stem: str = Path(path_file).stem
-        path_parent: PosixPath = Path(path_file).parent
+        path_file_stem: str = pathlib.Path(path_file).stem
+        path_parent: pathlib.Path = pathlib.Path(path_file).parent
         path_files: [str] = []
 
         for extension in AudioExtensions:
@@ -282,3 +303,22 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
 
     return os.path.join(base_path, relative_path)
+
+
+def url_to_filename(url: str) -> str:
+    """Return basename corresponding to url.
+    >>> print(url_to_filename('http://example.com/path/to/file%C3%80?opt=1'))
+    fileÀ
+    >>> print(url_to_filename('http://example.com/slash%2fname')) # '/' in name
+    Taken from https://gist.github.com/zed/c2168b9c52b032b5fb7d
+    Traceback (most recent call last):
+    ...
+    ValueError
+    """
+    urlpath: str = urlsplit(url).path
+    basename: str = posixpath.basename(unquote(urlpath))
+
+    if os.path.basename(basename) != basename or unquote(posixpath.basename(urlpath)) != basename:
+        raise ValueError  # reject '%2f' or 'dir%5Cbasename.ext' on Windows
+
+    return basename

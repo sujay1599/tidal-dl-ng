@@ -5,6 +5,12 @@ REQUESTS_TIMEOUT_SEC: int = 45
 EXTENSION_LYRICS: str = ".lrc"
 UNIQUIFY_THRESHOLD: int = 99
 FILENAME_SANITIZE_PLACEHOLDER: str = "_"
+COVER_NAME: str = "cover.jpg"
+BLOCK_SIZE: int = 4096
+BLOCKS: int = 1024
+CHUNK_SIZE: int = BLOCK_SIZE * BLOCKS
+PLAYLIST_EXTENSION: str = ".m3u"
+PLAYLIST_PREFIX: str = "_"
 
 
 class QualityVideo(StrEnum):
@@ -21,13 +27,6 @@ class MediaType(StrEnum):
     ALBUM: str = "album"
     MIX: str = "mix"
     ARTIST: str = "artist"
-
-
-class SkipExisting(StrEnum):
-    Disabled: str = "False"
-    Filename: str = "exact"
-    ExtensionIgnore: str = "extension_ignore"
-    Append: str = "append"
 
 
 class CoverDimensions(StrEnum):

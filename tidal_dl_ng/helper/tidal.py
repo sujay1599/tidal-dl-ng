@@ -25,8 +25,10 @@ def name_builder_album_artist(media: Track | Album) -> str:
     return ", ".join(artists_tmp)
 
 
-def name_builder_title(media: Track | Video) -> str:
-    result: str = media.full_name if hasattr(media, "full_name") else media.name
+def name_builder_title(media: Track | Video | Mix | Playlist | Album | Video) -> str:
+    result: str = (
+        media.title if isinstance(media, Mix) else media.full_name if hasattr(media, "full_name") else media.name
+    )
 
     return result
 
@@ -136,11 +138,11 @@ def paginate_results(func_get_items_media: [Callable]) -> [Track | Video | Album
         offset: int = 0
         done: bool = False
 
+        if func_media.__func__ == LoggedInUser.playlist_and_favorite_playlists:
+            limit: int = 50
+
         while not done:
-            if func_media.__func__ == LoggedInUser.playlist_and_favorite_playlists:
-                tmp_result: [Playlist | UserPlaylist] = func_media(offset=offset)
-            else:
-                tmp_result: [Track | Video | Album] = func_media(limit=limit, offset=offset)
+            tmp_result: [Track | Video | Album | Playlist | UserPlaylist] = func_media(limit=limit, offset=offset)
 
             if bool(tmp_result):
                 result += tmp_result
@@ -186,10 +188,8 @@ def instantiate_media(
 def quality_audio_highest(media: Track | Album) -> Quality:
     quality: Quality
 
-    if MediaMetadataTags.hires_lossless in media.media_metadata_tags:
+    if MediaMetadataTags.hi_res_lossless in media.media_metadata_tags:
         quality = Quality.hi_res_lossless
-    elif MediaMetadataTags.mqa in media.media_metadata_tags:
-        quality = Quality.hi_res
     elif MediaMetadataTags.lossless in media.media_metadata_tags:
         quality = Quality.high_lossless
     else:

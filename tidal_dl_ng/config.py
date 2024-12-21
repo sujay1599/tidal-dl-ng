@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 from collections.abc import Callable
@@ -31,7 +32,9 @@ class BaseConfig:
         os.makedirs(self.path_base, exist_ok=True)
 
         with open(self.file_path, encoding="utf-8", mode="w") as f:
-            f.write(data_json)
+            # Save it in a pretty format
+            obj_json_config = json.loads(data_json)
+            json.dump(obj_json_config, f, indent=4)
 
     def set_option(self, key: str, value: Any) -> None:
         value_old: Any = getattr(self.data, key)
@@ -98,7 +101,6 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
         # self.session.config.client_secret = "vcmeGW1OuZ0fWYMCSZ6vNvSLJlT3XEpW0ambgYt5ZuI="
         self.file_path = path_file_token()
         self.token_from_storage = self.read(self.file_path)
-        self.login_token()
 
         if settings:
             self.settings = settings
@@ -113,13 +115,8 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
 
         return True
 
-    def login_token(self, do_pkce: bool = True) -> bool:
+    def login_token(self, do_pkce: bool = False) -> bool:
         result = False
-
-        # Do not login via PKCE, if HiRes LOSSLESS is not set as global audio quality.
-        if self.session.audio_quality != tidalapi.media.Quality.hi_res_lossless:
-            do_pkce = False
-
         self.is_pkce = do_pkce
 
         if self.token_from_storage:
@@ -131,8 +128,16 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
                     self.data.expiry_time,
                     is_pkce=do_pkce,
                 )
-            except HTTPError:
+            except (HTTPError, JSONDecodeError):
                 result = False
+                # Remove token file. Probably corrupt or invalid.
+                if os.path.exists(self.file_path):
+                    os.remove(self.file_path)
+
+                print(
+                    "Either there is something wrong with your credentials / account or some server problems on TIDALs "
+                    "side. Anyway... Try to login again by re-starting this app."
+                )
 
         return result
 
@@ -163,9 +168,9 @@ class Tidal(BaseConfig, metaclass=SingletonMeta):
             fn_print("You either do not have a token or your token is invalid.")
             fn_print("No worries, we will handle this...")
             # Login method: Device linking
-            # self.session.login_oauth_simple(fn_print)
-            # Login method: PKCE authorization (enables HiRes streaming)
-            self.session.login_pkce(fn_print)
+            self.session.login_oauth_simple(fn_print)
+            # Login method: PKCE authorization (was necessary for HI_RES_LOSSLESS streaming earlier)
+            # self.session.login_pkce(fn_print)
 
             is_login = self.login_finalize()
 

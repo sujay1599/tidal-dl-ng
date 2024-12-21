@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>640</width>
-    <height>682</height>
+    <height>800</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -108,7 +108,7 @@
         <item>
          <layout class="QHBoxLayout" name="lh_flags_2">
           <item>
-           <layout class="QHBoxLayout" name="lh_flag_lyrics_embed">
+           <layout class="QVBoxLayout" name="lv_flag_lyrics_embed">
             <item>
              <widget class="QCheckBox" name="cb_lyrics_embed">
               <property name="sizePolicy">
@@ -128,7 +128,7 @@
            </layout>
           </item>
           <item>
-           <layout class="QHBoxLayout" name="lh_flag_lyrics_file">
+           <layout class="QVBoxLayout" name="lv_flag_lyrics_file">
             <item>
              <widget class="QCheckBox" name="cb_lyrics_file">
               <property name="sizePolicy">
@@ -185,17 +185,72 @@
          </layout>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout">
+         <layout class="QHBoxLayout" name="lh_flags_4">
           <item>
-           <layout class="QVBoxLayout" name="lv_flag_downgrade_on_hi_res">
+           <layout class="QVBoxLayout" name="lv_flag_metadata_cover_embed">
             <item>
-             <widget class="QCheckBox" name="cb_downgrade_on_hi_res">
+             <widget class="QCheckBox" name="cb_metadata_cover_embed">
               <property name="text">
                <string>CheckBox</string>
               </property>
              </widget>
             </item>
            </layout>
+          </item>
+          <item>
+           <layout class="QVBoxLayout" name="lv_flag_cover_album_file">
+            <item>
+             <widget class="QCheckBox" name="cb_cover_album_file">
+              <property name="text">
+               <string>CheckBox</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout">
+          <item>
+           <layout class="QVBoxLayout" name="lv_flag_skip_existing">
+            <item>
+             <widget class="QCheckBox" name="cb_skip_existing">
+              <property name="text">
+               <string>CheckBox</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <layout class="QVBoxLayout" name="lv_symlink_to_track">
+            <item>
+             <widget class="QCheckBox" name="cb_symlink_to_track">
+              <property name="text">
+               <string>CheckBox</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout_12">
+          <item>
+           <layout class="QVBoxLayout" name="lv_playlist_create">
+            <item>
+             <widget class="QCheckBox" name="cb_playlist_create">
+              <property name="text">
+               <string>CheckBox</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <layout class="QVBoxLayout" name="verticalLayout_4"/>
           </item>
          </layout>
         </item>
@@ -214,39 +269,6 @@
         <string>Choices</string>
        </property>
        <layout class="QVBoxLayout" name="lv_choices">
-        <item>
-         <layout class="QHBoxLayout" name="lh_choices_skip_existing" stretch="0,0,50">
-          <item>
-           <widget class="QLabel" name="l_icon_skip_existing">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>TextLabel</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QLabel" name="l_skip_existing">
-            <property name="sizePolicy">
-             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
-              <horstretch>0</horstretch>
-              <verstretch>0</verstretch>
-             </sizepolicy>
-            </property>
-            <property name="text">
-             <string>TextLabel</string>
-            </property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QComboBox" name="c_skip_existing"/>
-          </item>
-         </layout>
-        </item>
         <item>
          <layout class="QHBoxLayout" name="lh_choices_quality_audio" stretch="0,0,50">
           <item>
@@ -316,7 +338,7 @@
         <item>
          <layout class="QHBoxLayout" name="lh_choices_cover_dimension" stretch="0,0,50">
           <property name="sizeConstraint">
-           <enum>QLayout::SetDefaultConstraint</enum>
+           <enum>QLayout::SizeConstraint::SetDefaultConstraint</enum>
           </property>
           <item>
            <widget class="QLabel" name="l_icon_metadata_cover_dimension">
@@ -351,6 +373,68 @@
               <horstretch>10</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <widget class="QGroupBox" name="gb_numbers">
+       <property name="title">
+        <string>Numbers</string>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout_8">
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout_9">
+          <item>
+           <widget class="QLabel" name="l_album_track_num_pad_min">
+            <property name="text">
+             <string>TextLabel</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="l_icon_album_track_num_pad_min">
+            <property name="text">
+             <string>TextLabel</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QSpinBox" name="sb_album_track_num_pad_min">
+            <property name="maximum">
+             <number>4</number>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="horizontalLayout_11">
+          <item>
+           <widget class="QLabel" name="l_downloads_concurrent_max">
+            <property name="text">
+             <string>TextLabel</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="l_icon_downloads_concurrent_max">
+            <property name="text">
+             <string>TextLabel</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QSpinBox" name="sb_downloads_concurrent_max">
+            <property name="minimum">
+             <number>1</number>
+            </property>
+            <property name="maximum">
+             <number>5</number>
             </property>
            </widget>
           </item>
@@ -679,10 +763,10 @@
      <item>
       <widget class="QDialogButtonBox" name="bb_dialog">
        <property name="orientation">
-        <enum>Qt::Horizontal</enum>
+        <enum>Qt::Orientation::Horizontal</enum>
        </property>
        <property name="standardButtons">
-        <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+        <set>QDialogButtonBox::StandardButton::Cancel|QDialogButtonBox::StandardButton::Ok</set>
        </property>
       </widget>
      </item>
