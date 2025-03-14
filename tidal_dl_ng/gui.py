@@ -1,8 +1,55 @@
+# Compilation mode, support OS-specific options
+# nuitka-project-if: {OS} in ("Darwin"):
+#    nuitka-project: --macos-create-app-bundle
+#    nuitka-project: --macos-app-icon=tidal_dl_ng/ui/icon.icns
+#    nuitka-project: --macos-signed-app-name=com.exislow.TidalDlNg
+#    nuitka-project: --macos-app-mode=gui
+# nuitka-project-if: {OS} in ("Linux", "FreeBSD"):
+#    nuitka-project: --linux-icon=tidal_dl_ng/ui/icon.png
+# nuitka-project-if: {OS} in ("Windows"):
+#    nuitka-project: --windows-icon-from-ico=tidal_dl_ng/ui/icon.ico
+#    nuitka-project: --file-description="TIDAL media downloader next generation."
+
+# Debugging options, controlled via environment variable at compile time.
+# nuitka-project-if: {OS} == "Windows" and os.getenv("DEBUG_COMPILATION", "no") == "yes":
+#    nuitka-project: --windows-console-mode=hide
+# nuitka-project-else:
+#    nuitka-project: --windows-console-mode=disable
+# nuitka-project-if: os.getenv("DEBUG_COMPILATION", "no") == "yes":
+#    nuitka-project: --debug
+#    nuitka-project: --debugger
+#    nuitka-project: --experimental=allow-c-warnings
+#    nuitka-project: --no-debug-immortal-assumptions
+#    nuitka-project: --run
+# nuitka-project-else:
+#    nuitka-project: --assume-yes-for-downloads
+# nuitka-project-if: os.getenv("DEPLOYMENT", "no") == "yes":
+#    nuitka-project: --deployment
+
+# The PySide6 plugin covers qt-plugins
+# nuitka-project: --standalone
+# nuitka-project: --output-dir=dist
+# nuitka-project: --enable-plugin=pyside6
+# nuitka-project: --include-qt-plugins=qml
+# nuitka-project: --noinclude-dlls=libQt6Charts*
+# nuitka-project: --noinclude-dlls=libQt6Quick3D*
+# nuitka-project: --noinclude-dlls=libQt6Sensors*
+# nuitka-project: --noinclude-dlls=libQt6Test*
+# nuitka-project: --noinclude-dlls=libQt6WebEngine*
+# nuitka-project: --include-data-files={MAIN_DIRECTORY}/ui/icon.*=tidal_dl_ng/ui/
+# nuitka-project: --include-data-files={MAIN_DIRECTORY}/ui/default_album_image.png=tidal_dl_ng/ui/default_album_image.png
+# nuitka-project: --include-data-files=./pyproject.toml=pyproject.toml
+# nuitka-project: --force-stderr-spec="{TEMP}/tidal-dl-ng.err.log"
+# nuitka-project: --force-stdout-spec="{TEMP}/tidal-dl-ng.out.log"
+# nuitka-project: --company-name=exislow
+
+
 import math
 import sys
 import time
 from collections.abc import Callable, Sequence
 
+from config import HandlingApp
 from requests.exceptions import HTTPError
 from tidalapi.session import LinkLogin
 
@@ -12,7 +59,8 @@ from tidal_dl_ng.helper.gui import (
     FilterHeader,
     HumanProxyModel,
     get_queue_download_media,
-    get_queue_download_quality,
+    get_queue_download_quality_audio,
+    get_queue_download_quality_video,
     get_results_media_item,
     get_user_list_media_item,
     set_queue_download_media,
@@ -37,7 +85,7 @@ try:
     from PySide6 import QtCore, QtGui, QtWidgets
 except ImportError as e:
     print(e)
-    print("Qt dependencies missing. Cannot start GUI. Please execute: 'pip install pyside6 pyqtdarktheme'")
+    print("Qt dependencies missing. Cannot start GUI. Please read the 'README.md' carefully.")
     sys.exit(1)
 
 import coloredlogs.converter
@@ -66,6 +114,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     tray: QtWidgets.QSystemTrayIcon
     spinner: QtWaitingSpinner
     cover_url_current: str = ""
+    shutdown: bool = False
     model_tr_results: QtGui.QStandardItemModel = QtGui.QStandardItemModel()
     proxy_tr_results: HumanProxyModel
     s_spinner_start: QtCore.Signal = QtCore.Signal(QtWidgets.QWidget)
@@ -113,6 +162,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self._populate_search_types(self.cb_search_type, SearchTypes)
         self.apply_settings(self.settings)
         self._init_signals()
+        self._init_buttons()
         self.init_tidal(tidal)
 
         logger_gui.debug("All setup.")
@@ -170,6 +220,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             list_name=self.s_list_name,
         )
         progress: Progress = Progress()
+        handling_app: HandlingApp = HandlingApp()
         self.dl = Download(
             session=self.tidal.session,
             skip_existing=self.tidal.settings.data.skip_existing,
@@ -177,6 +228,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             fn_logger=logger_gui,
             progress_gui=data_pb,
             progress=progress,
+            event_abort=handling_app.event_abort,
+            event_run=handling_app.event_run,
         )
 
     def _init_progressbar(self):
@@ -650,7 +703,8 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
     ) -> QueueDownloadItem | bool:
         result: QueueDownloadItem | False
         name: str = ""
-        quality: Quality | QualityVideo | str = ""
+        quality_audio: Quality = self.settings.data.quality_audio
+        quality_video: QualityVideo = self.settings.data.quality_video
         explicit: str = ""
 
         # Check if item is available on TIDAL.
@@ -666,31 +720,26 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
             name = f"{name_builder_artist(media)} - {name_builder_title(media)}{explicit}"
         elif isinstance(media, Playlist | Artist):
             name = media.name
-            quality = self.settings.data.quality_audio
         elif isinstance(media, Album):
             name = f"{name_builder_artist(media)} - {media.name}{explicit}"
         elif isinstance(media, Mix):
             name = media.title
-            quality = self.settings.data.quality_audio
 
         # Determine actual quality.
         if isinstance(media, Track | Album):
-            quality_highest: str = quality_audio_highest(media)
+            quality_highest: Quality = quality_audio_highest(media)
 
             if (
                 self.settings.data.quality_audio == quality_highest
                 or self.settings.data.quality_audio == Quality.hi_res_lossless
             ):
-                quality = quality_highest
-            else:
-                quality = self.settings.data.quality_audio
-        elif isinstance(media, Video):
-            quality = self.settings.data.quality_video
+                quality_audio = quality_highest
 
         if name:
             result = QueueDownloadItem(
                 name=name,
-                quality=quality,
+                quality_audio=quality_audio,
+                quality_video=quality_video,
                 type_media=type(media).__name__,
                 status=QueueDownloadStatus.Waiting,
                 obj=media,
@@ -707,6 +756,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.pb_queue_download_clear_all.clicked.connect(self.on_queue_download_clear_all)
         self.pb_queue_download_clear_finished.clicked.connect(self.on_queue_download_clear_finished)
         self.pb_queue_download_remove.clicked.connect(self.on_queue_download_remove)
+        self.pb_queue_download_toggle.clicked.connect(self.on_pb_queue_download_toggle)
         self.l_search.returnPressed.connect(
             lambda: self.search_populate_results(self.l_search.text(), self.cb_search_type.currentData())
         )
@@ -732,7 +782,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.s_update_show.connect(self.on_version)
 
         # Menubar
-        self.a_exit.triggered.connect(sys.exit)
+        self.a_exit.triggered.connect(self.close)
         self.a_version.triggered.connect(self.on_version)
         self.a_preferences.triggered.connect(self.on_preferences)
         self.a_logout.triggered.connect(self.on_logout)
@@ -748,6 +798,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.s_queue_download_item_finished.connect(self.on_queue_download_item_finished)
         self.s_queue_download_item_failed.connect(self.on_queue_download_item_failed)
         self.s_queue_download_item_skipped.connect(self.on_queue_download_item_skipped)
+
+    def _init_buttons(self):
+        self.pb_queue_download_run()
 
     def on_logout(self):
         result: bool = self.tidal.logout()
@@ -885,6 +938,36 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 else:
                     logger_gui.info("Cannot remove a currently downloading item from queue.")
 
+    def on_pb_queue_download_toggle(self) -> None:
+        """Toggle download status (pause / resume) accordingly.
+
+        :return: None
+        """
+        handling_app: HandlingApp = HandlingApp()
+
+        if handling_app.event_run.is_set():
+            self.pb_queue_download_pause()
+        else:
+            self.pb_queue_download_run()
+
+    def pb_queue_download_run(self):
+        handling_app: HandlingApp = HandlingApp()
+
+        handling_app.event_run.set()
+
+        icon = QtGui.QIcon(QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.MediaPlaybackStart))
+        self.pb_queue_download_toggle.setIcon(icon)
+        self.pb_queue_download_toggle.setStyleSheet("background-color: #218838; color: #fff")
+
+    def pb_queue_download_pause(self):
+        handling_app: HandlingApp = HandlingApp()
+
+        handling_app.event_run.clear()
+
+        icon = QtGui.QIcon(QtGui.QIcon.fromTheme(QtGui.QIcon.ThemeIcon.MediaPlaybackPause))
+        self.pb_queue_download_toggle.setIcon(icon)
+        self.pb_queue_download_toggle.setStyleSheet("background-color: #e0a800; color: #212529")
+
     # TODO: Must happen in main thread. Do not thread this.
     def on_download_results(self) -> None:
         items: [HumanProxyModel | None] = self.tr_results.selectionModel().selectedRows()
@@ -909,11 +992,14 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         set_queue_download_media(child, queue_dl_item.obj)
         child.setText(2, queue_dl_item.name)
         child.setText(3, queue_dl_item.type_media)
-        child.setText(4, queue_dl_item.quality)
+        child.setText(4, queue_dl_item.quality_audio)
+        child.setText(5, queue_dl_item.quality_video)
         self.tr_queue_download.addTopLevelItem(child)
 
     def watcher_queue_download(self) -> None:
-        while True:
+        handling_app: HandlingApp = HandlingApp()
+
+        while not handling_app.event_abort.is_set():
             items: [QtWidgets.QTreeWidgetItem | None] = self.tr_queue_download.findItems(
                 QueueDownloadStatus.Waiting, QtCore.Qt.MatchFlag.MatchExactly, column=0
             )
@@ -922,12 +1008,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 result: QueueDownloadStatus
                 item: QtWidgets.QTreeWidgetItem = items[0]
                 media: Track | Album | Playlist | Video | Mix | Artist = get_queue_download_media(item)
-                tmp_quality: str = get_queue_download_quality(item)
-                quality: Quality | QualityVideo | None = tmp_quality if tmp_quality else None
+                quality_audio: Quality = get_queue_download_quality_audio(item)
+                quality_video: QualityVideo = get_queue_download_quality_video(item)
 
                 try:
                     self.s_queue_download_item_downloading.emit(item)
-                    result = self.on_queue_download(media, quality=quality)
+                    result = self.on_queue_download(media, quality_audio=quality_audio, quality_video=quality_video)
 
                     if result == QueueDownloadStatus.Finished:
                         self.s_queue_download_item_finished.emit(item)
@@ -955,7 +1041,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         item.setText(0, status)
 
     def on_queue_download(
-        self, media: Track | Album | Playlist | Video | Mix | Artist, quality: Quality | QualityVideo | None = None
+        self,
+        media: Track | Album | Playlist | Video | Mix | Artist,
+        quality_audio: Quality | None = None,
+        quality_video: QualityVideo | None = None,
     ) -> QueueDownloadStatus:
         result: QueueDownloadStatus
         items_media: [Track | Album | Playlist | Video | Mix | Artist]
@@ -968,7 +1057,13 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         download_delay: bool = bool(isinstance(media, Track | Video) and self.settings.data.download_delay)
 
         for item_media in items_media:
-            result = self.download(item_media, self.dl, delay_track=download_delay, quality=quality)
+            result = self.download(
+                item_media,
+                self.dl,
+                delay_track=download_delay,
+                quality_audio=quality_audio,
+                quality_video=quality_video,
+            )
 
         return result
 
@@ -977,26 +1072,18 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         media: Track | Album | Playlist | Video | Mix | Artist,
         dl: Download,
         delay_track: bool = False,
-        quality: Quality | QualityVideo | None = None,
+        quality_audio: Quality | None = None,
+        quality_video: QualityVideo | None = None,
     ) -> QueueDownloadStatus:
         result_dl: bool
         path_file: str
         result: QueueDownloadStatus
-        quality_audio: Quality | None
-        quality_video: QualityVideo | None
         self.s_pb_reset.emit()
         self.s_statusbar_message.emit(StatusbarMessage(message="Download started..."))
 
         file_template = get_format_template(media, self.settings)
 
         if isinstance(media, Track | Video):
-            if isinstance(media, Track):
-                quality_audio = quality
-                quality_video = None
-            else:
-                quality_audio = None
-                quality_video = quality
-
             result_dl, path_file = dl.item(
                 media=media,
                 file_template=file_template,
@@ -1005,13 +1092,6 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
                 quality_video=quality_video,
             )
         elif isinstance(media, Album | Playlist | Mix):
-            if isinstance(media, Album):
-                quality_audio = quality
-                quality_video = None
-            else:
-                quality_audio = None
-                quality_video = None
-
             dl.items(
                 media=media,
                 file_template=file_template,
@@ -1065,12 +1145,22 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.pb_reload_user_lists.setEnabled(status)
         self.pb_reload_user_lists.setText(button_text)
 
+    def closeEvent(self, event):
+        self.shutdown = True
+
+        handling_app: HandlingApp = HandlingApp()
+        handling_app.event_abort.set()
+
+        event.accept()
+
 
 # TODO: Comment with Google Docstrings.
 def gui_activate(tidal: Tidal | None = None):
     # Set dark theme and create QT app.
     qdarktheme.enable_hi_dpi()
+
     app = QtWidgets.QApplication(sys.argv)
+
     # Fix for Windows: Tooltips have bright font color
     # https://github.com/5yutan5/PyQtDarkTheme/issues/239
     # qdarktheme.setup_theme()
@@ -1079,6 +1169,7 @@ def gui_activate(tidal: Tidal | None = None):
     # Create icon object and apply it to app window.
     pixmap: QtGui.QPixmap = QtGui.QPixmap("tidal_dl_ng/ui/icon.png")
     icon: QtGui.QIcon = QtGui.QIcon(pixmap)
+
     app.setWindowIcon(icon)
 
     # This bit gets the taskbar icon working properly in Windows
@@ -1092,6 +1183,7 @@ def gui_activate(tidal: Tidal | None = None):
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
     window = MainWindow(tidal=tidal)
+
     window.show()
     # Check for updates
     window.s_update_check.emit(True)

@@ -6,11 +6,12 @@ import tempfile
 import time
 from collections.abc import Callable
 from concurrent import futures
+from threading import Event
 from uuid import uuid4
 
-import ffmpeg
 import m3u8
 import requests
+from ffmpeg import FFmpeg
 from requests.adapters import HTTPAdapter, Retry
 from requests.exceptions import HTTPError
 from rich.progress import Progress, TaskID
@@ -31,7 +32,13 @@ from tidal_dl_ng.constants import (
 )
 from tidal_dl_ng.helper.decryption import decrypt_file, decrypt_security_token
 from tidal_dl_ng.helper.exceptions import MediaMissing
-from tidal_dl_ng.helper.path import check_file_exists, format_path_media, path_file_sanitize, url_to_filename
+from tidal_dl_ng.helper.path import (
+    check_file_exists,
+    format_path_media,
+    path_file_sanitize,
+    sanitize_filename,
+    url_to_filename,
+)
 from tidal_dl_ng.helper.tidal import (
     instantiate_media,
     items_results_all,
@@ -67,6 +74,9 @@ class Download:
     fn_logger: Callable
     progress_gui: ProgressBars
     progress: Progress
+    progress_overall: Progress
+    event_abort: Event
+    event_run: Event
 
     def __init__(
         self,
@@ -76,6 +86,9 @@ class Download:
         skip_existing: bool = False,
         progress_gui: ProgressBars = None,
         progress: Progress = None,
+        progress_overall: Progress = None,
+        event_abort: Event = None,
+        event_run: Event = None,
     ):
         self.settings = Settings()
         self.session = session
@@ -83,7 +96,10 @@ class Download:
         self.fn_logger = fn_logger
         self.progress_gui = progress_gui
         self.progress = progress
+        self.progress_overall = progress_overall
         self.path_base = path_base
+        self.event_abort = event_abort
+        self.event_run = event_run
 
         if not self.settings.data.path_binary_ffmpeg and (
             self.settings.data.video_convert_mp4 or self.settings.data.extract_flac
@@ -138,11 +154,14 @@ class Download:
             progress_total: int = urls_count
             block_size: int | None = None
         elif urls_count == 1:
-            # Get file size and compute progress steps
-            r = requests.head(urls[0], timeout=REQUESTS_TIMEOUT_SEC)
-            total_size_in_bytes: int = int(r.headers.get("content-length", 0))
-            block_size: int | None = 1048576
-            progress_total: float = total_size_in_bytes / block_size
+            try:
+                # Get file size and compute progress steps
+                r = requests.head(urls[0], timeout=REQUESTS_TIMEOUT_SEC)
+                total_size_in_bytes: int = int(r.headers.get("content-length", 0))
+                block_size: int | None = 1048576
+                progress_total: float = total_size_in_bytes / block_size
+            finally:
+                r.close()
         else:
             raise ValueError
 
@@ -160,10 +179,11 @@ class Download:
                 max_workers=self.settings.data.downloads_simultaneous_per_track_max
             ) as executor:
                 # Dispatch all download tasks to worker threads
-                l_futures: [any] = [
+                l_futures: [futures.Future] = [
                     executor.submit(self._download_segment, url, path_base, block_size, p_task, progress_to_stdout)
                     for url in urls
                 ]
+
                 # Report results as they become available
                 for future in futures.as_completed(l_futures):
                     # Retrieve result
@@ -179,6 +199,14 @@ class Download:
                         # mark the whole thing as corrupt.
                         result_segments = False
                         self.fn_logger.error(f"Something went wrong while downloading {media_name}. File is corrupt!")
+
+                    # If app is terminated (CTRL+C)
+                    if self.event_abort.is_set():
+                        # Cancel all not yet started tasks
+                        for f in l_futures:
+                            f.cancel()
+
+                        return False, path_file
 
         tmp_path_file_decrypted: pathlib.Path = path_file
 
@@ -198,7 +226,7 @@ class Download:
         return result_merge, tmp_path_file_decrypted
 
     def _segments_merge(self, path_file, dl_segment_results) -> bool:
-        result: bool
+        result: bool = True
 
         # Copy the content of all segments into one file.
         try:
@@ -212,9 +240,9 @@ class Download:
                     # Delete segment from HDD
                     dl_segment_result.path_segment.unlink()
 
-            result = True
         except Exception:
-            result = False
+            if dl_segment_result is not dl_segment_results[-1]:
+                result = False
 
         return result
 
@@ -229,28 +257,37 @@ class Download:
         id_segment: int = int(filename_stem) if filename_stem.isdecimal() else 0
         error: HTTPError | None = None
 
+        # If app is terminated (CTRL+C)
+        if self.event_abort.is_set():
+            return DownloadSegmentResult(
+                result=False, url=url, path_segment=path_segment, id_segment=id_segment, error=error
+            )
+
+        if not self.event_run.is_set():
+            self.event_run.wait()
+
         # Retry download on failed segments, with an exponential delay between retries
-        s = requests.Session()
-        retries = Retry(total=5, backoff_factor=1)  # , status_forcelist=[ 502, 503, 504 ])
+        with requests.Session() as s:
+            retries = Retry(total=5, backoff_factor=1)  # , status_forcelist=[ 502, 503, 504 ])
 
-        s.mount("https://", HTTPAdapter(max_retries=retries))
+            s.mount("https://", HTTPAdapter(max_retries=retries))
 
-        try:
-            # Create the request object with stream=True, so the content won't be loaded into memory at once.
-            r = s.get(url, stream=True, timeout=REQUESTS_TIMEOUT_SEC)
+            try:
+                # Create the request object with stream=True, so the content won't be loaded into memory at once.
+                r = s.get(url, stream=True, timeout=REQUESTS_TIMEOUT_SEC)
 
-            r.raise_for_status()
+                r.raise_for_status()
 
-            # Write the content to disk. If `chunk_size` is set to `None` the whole file will be written at once.
-            with path_segment.open("wb") as f:
-                for data in r.iter_content(chunk_size=block_size):
-                    f.write(data)
-                    # Advance progress bar.
-                    self.progress.advance(p_task)
+                # Write the content to disk. If `chunk_size` is set to `None` the whole file will be written at once.
+                with path_segment.open("wb") as f:
+                    for data in r.iter_content(chunk_size=block_size):
+                        f.write(data)
+                        # Advance progress bar.
+                        self.progress.advance(p_task)
 
-            result = True
-        except Exception:
-            self.progress.advance(p_task)
+                result = True
+            except Exception:
+                self.progress.advance(p_task)
 
         # To send the progress to the GUI, we need to emit the percentage.
         if not progress_to_stdout:
@@ -260,7 +297,9 @@ class Download:
             result=result, url=url, path_segment=path_segment, id_segment=id_segment, error=error
         )
 
-    def extension_guess(self, quality_audio: Quality, is_video: bool) -> AudioExtensions | VideoExtensions:
+    def extension_guess(
+        self, quality_audio: Quality, metadata_tags: [str], is_video: bool
+    ) -> AudioExtensions | VideoExtensions:
         result: AudioExtensions | VideoExtensions
 
         if is_video:
@@ -268,7 +307,12 @@ class Download:
         else:
             result = (
                 AudioExtensions.FLAC
-                if self.settings.data.extract_flac and quality_audio in (Quality.hi_res_lossless, Quality.high_lossless)
+                if (
+                    self.settings.data.extract_flac
+                    and quality_audio in (Quality.hi_res_lossless, Quality.high_lossless)
+                )
+                or ("HIRES_LOSSLESS" not in metadata_tags and quality_audio not in (Quality.low_96k, Quality.low_320k))
+                or quality_audio == Quality.high_lossless
                 else AudioExtensions.M4A
             )
 
@@ -314,14 +358,18 @@ class Download:
             return False, ""
 
         # Create file name and path
-        file_extension_dummy: str = self.extension_guess(quality_audio, isinstance(media, Video))
+        file_extension_dummy: str = self.extension_guess(
+            quality_audio,
+            metadata_tags=[] if isinstance(media, Video) else media.media_metadata_tags,
+            is_video=isinstance(media, Video),
+        )
         file_name_relative: str = format_path_media(file_template, media, self.settings.data.album_track_num_pad_min)
         path_media_dst: pathlib.Path = (
             pathlib.Path(self.path_base).expanduser() / (file_name_relative + file_extension_dummy)
         ).absolute()
 
         # Sanitize final path_file to fit into OS boundaries.
-        path_media_dst = pathlib.Path(path_file_sanitize(str(path_media_dst), adapt=True))
+        path_media_dst = pathlib.Path(path_file_sanitize(path_media_dst, adapt=True))
 
         # Compute if and how downloads need to be skipped.
         skip_download: bool = False
@@ -335,7 +383,7 @@ class Download:
                 path_media_track_dir: pathlib.Path = (
                     pathlib.Path(self.path_base).expanduser() / (file_name_track_dir_relative + file_extension_dummy)
                 ).absolute()
-                path_media_track_dir = pathlib.Path(path_file_sanitize(str(path_media_track_dir), adapt=True))
+                path_media_track_dir = pathlib.Path(path_file_sanitize(path_media_track_dir, adapt=True))
                 file_exists_track_dir: bool = check_file_exists(path_media_track_dir, extension_ignore=False)
                 file_exists_playlist_dir: bool = (
                     not file_exists_track_dir and skip_file and not path_media_dst.is_symlink()
@@ -387,7 +435,7 @@ class Download:
 
             # Compute file name, sanitize once again and create destination directory
             path_media_dst = path_media_dst.with_suffix(file_extension)
-            path_media_dst = pathlib.Path(path_file_sanitize(str(path_media_dst), adapt=True))
+            path_media_dst = pathlib.Path(path_file_sanitize(path_media_dst, adapt=True))
             os.makedirs(path_media_dst.parent, exist_ok=True)
 
             if not skip_download:
@@ -455,7 +503,7 @@ class Download:
 
         # Whether a file was downloaded or skipped and the download delay is enabled, wait until the next download.
         # Only use this, if you have a list of several Track items.
-        if download_delay and not skip_file:
+        if (download_delay and not skip_file) and not self.event_abort.is_set():
             time_sleep: float = round(
                 random.SystemRandom().uniform(
                     self.settings.data.download_delay_sec_min, self.settings.data.download_delay_sec_max
@@ -476,7 +524,7 @@ class Download:
         path_media_dst: pathlib.Path = (
             pathlib.Path(self.path_base).expanduser() / (file_name_relative + file_extension)
         ).absolute()
-        path_media_dst = pathlib.Path(path_file_sanitize(str(path_media_dst), adapt=True))
+        path_media_dst = pathlib.Path(path_file_sanitize(path_media_dst, adapt=True))
 
         os.makedirs(path_media_dst.parent, exist_ok=True)
 
@@ -495,8 +543,10 @@ class Download:
 
             if not skip_symlink:
                 self.fn_logger.debug(f"Symlink: {path_media_src} -> {path_media_dst}")
+                path_media_dst_relative: pathlib.Path = path_media_dst.relative_to(path_media_src.parent, walk_up=True)
+
                 path_media_src.unlink(missing_ok=True)
-                path_media_src.symlink_to(path_media_dst)
+                path_media_src.symlink_to(path_media_dst_relative)
 
         return path_media_dst
 
@@ -549,7 +599,7 @@ class Download:
         return self.write_to_tmp_file(dir_destination, mode="xb", content=image)
 
     def write_to_tmp_file(self, dir_destination: pathlib.Path, mode: str, content: str | bytes) -> str:
-        result: str = dir_destination / str(uuid4())
+        result: pathlib.Path = dir_destination / str(uuid4())
         encoding: str | None = "utf-8" if isinstance(content, str) else None
 
         try:
@@ -566,10 +616,13 @@ class Download:
 
         if url:
             try:
-                result = requests.get(url, timeout=REQUESTS_TIMEOUT_SEC).content
+                response: requests.Response = requests.get(url, timeout=REQUESTS_TIMEOUT_SEC)
+                result = response.content
             except Exception as e:
                 # TODO: Implement propper logging.
                 print(e)
+            finally:
+                response.close()
         elif path_file:
             try:
                 with open(path_file, "rb") as f:
@@ -640,6 +693,8 @@ class Download:
             album_peak_amplitude=media_stream.album_peak_amplitude,
             track_replay_gain=media_stream.track_replay_gain,
             track_peak_amplitude=media_stream.track_peak_amplitude,
+            url_share=track.share_url if track.share_url else "",
+            replay_gain_write=self.settings.data.metadata_replay_gain,
         )
 
         m.save()
@@ -680,10 +735,12 @@ class Download:
             progress_stdout: bool = True
         else:
             progress_stdout: bool = False
-            self.progress_gui.list_name.emit(list_media_name_short[:30])
+            self.progress_gui.list_name.emit(list_media_name_short)
+
+        progress: Progress = self.progress_overall if self.progress_overall else self.progress
 
         # Create the list progress task.
-        p_task1: TaskID = self.progress.add_task(
+        p_task1: TaskID = progress.add_task(
             f"[green]List '{list_media_name_short}'", total=len(items), visible=progress_stdout
         )
 
@@ -691,10 +748,10 @@ class Download:
         result_dirs: [pathlib.Path] = []
 
         # Iterate through list items
-        while not self.progress.finished:
+        while not progress.finished:
             with futures.ThreadPoolExecutor(max_workers=self.settings.data.downloads_concurrent_max) as executor:
                 # Dispatch all download tasks to worker threads
-                l_futures: [any] = [
+                l_futures: [futures.Future] = [
                     executor.submit(
                         self.item,
                         media=item_media,
@@ -706,19 +763,29 @@ class Download:
                     )
                     for item_media in items
                 ]
+
                 # Report results as they become available
                 for future in futures.as_completed(l_futures):
                     # Retrieve result
                     status, result_path_file = future.result()
 
-                    if status:
+                    if result_path_file:
                         result_dirs.append(result_path_file.parent)
 
                     # Advance progress bar.
-                    self.progress.advance(p_task1)
+                    progress.advance(p_task1)
 
                     if not progress_stdout:
-                        self.progress_gui.list_item.emit(self.progress.tasks[p_task1].percentage)
+                        self.progress_gui.list_item.emit(progress.tasks[p_task1].percentage)
+
+                    # If app is terminated (CTRL+C)
+                    if self.event_abort.is_set():
+                        # Cancel all not yet started tasks
+                        for f in l_futures:
+                            f.cancel()
+
+                        # End method here.
+                        return
 
         # Create playlist file
         if self.settings.data.playlist_create:
@@ -732,7 +799,7 @@ class Download:
         # For each dir, which contains tracks
         for dir_scoped in dirs_scoped:
             # Sanitize final playlist name to fit into OS boundaries.
-            path_playlist = dir_scoped / (PLAYLIST_PREFIX + name_list + PLAYLIST_EXTENSION)
+            path_playlist = dir_scoped / sanitize_filename(PLAYLIST_PREFIX + name_list + PLAYLIST_EXTENSION)
             path_playlist = pathlib.Path(path_file_sanitize(path_playlist, adapt=True))
 
             self.fn_logger.debug(f"Playlist: Creating {path_playlist}")
@@ -753,6 +820,8 @@ class Download:
                     # If it's a symlink write the relative file path to the actual track into the playlist file
                     if path_track.is_symlink():
                         media_file_target = path_track.resolve().relative_to(path_track.parent, walk_up=True)
+                    else:
+                        media_file_target = path_track.name
 
                     f.write(str(media_file_target) + os.linesep)
 
@@ -762,28 +831,33 @@ class Download:
 
     def _video_convert(self, path_file: pathlib.Path) -> pathlib.Path:
         path_file_out: pathlib.Path = path_file.with_suffix(AudioExtensions.MP4)
-        result, _ = (
-            ffmpeg.input(path_file)
-            .output(str(path_file_out), map=0, c="copy", loglevel="quiet")
-            .run(cmd=self.settings.data.path_binary_ffmpeg)
+        ffmpeg = (
+            FFmpeg(executable=self.settings.data.path_binary_ffmpeg)
+            .option("y")
+            .input(url=path_file)
+            .output(url=path_file_out, codec="copy", map=0, loglevel="quiet")
         )
+
+        ffmpeg.execute()
 
         return path_file_out
 
     def _extract_flac(self, path_media_src: pathlib.Path) -> pathlib.Path:
         path_media_out = path_media_src.with_suffix(AudioExtensions.FLAC)
-        result, _ = (
-            ffmpeg.input(path_media_src)
+        ffmpeg = (
+            FFmpeg(executable=self.settings.data.path_binary_ffmpeg)
+            .input(url=path_media_src)
             .output(
-                str(path_media_out),
+                url=path_media_out,
                 map=0,
                 movflags="use_metadata_tags",
                 acodec="copy",
                 map_metadata="0:g",
                 loglevel="quiet",
             )
-            .run(cmd=self.settings.data.path_binary_ffmpeg)
         )
+
+        ffmpeg.execute()
 
         return path_media_out
 

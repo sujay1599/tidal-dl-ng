@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 import importlib.metadata
-import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -32,7 +31,7 @@ def metadata_project() -> ProjectInformation:
 
     if tmp_result:
         result = ProjectInformation(
-            version=tmp_result["tool"]["poetry"]["version"], repository_url=tmp_result["tool"]["poetry"]["repository"]
+            version=tmp_result["project"]["version"], repository_url=tmp_result["project"]["repository"]
         )
     else:
         try:
@@ -98,8 +97,9 @@ def is_dev_env() -> bool:
     result: bool = False
 
     # Check if package is running from source code == dev mode
-    # If package is not running in PyInstaller environment.
-    if not getattr(sys, "frozen", False) and not hasattr(sys, "_MEIPASS"):
+    # If package is not running in Nuitka environment, try to import it from pip libraries.
+    # If this also fails, it is dev mode.
+    if "__compiled__" not in globals():
         try:
             importlib.metadata.version(package_name)
         except:
