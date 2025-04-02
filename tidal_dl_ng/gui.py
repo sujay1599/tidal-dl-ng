@@ -49,7 +49,6 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 
-from config import HandlingApp
 from requests.exceptions import HTTPError
 from tidalapi.session import LinkLogin
 
@@ -94,7 +93,7 @@ from tidalapi import Album, Mix, Playlist, Quality, Track, UserPlaylist, Video
 from tidalapi.artist import Artist
 from tidalapi.session import SearchTypes
 
-from tidal_dl_ng.config import Settings, Tidal
+from tidal_dl_ng.config import HandlingApp, Settings, Tidal
 from tidal_dl_ng.constants import FAVORITES, QualityVideo, QueueDownloadStatus, TidalLists
 from tidal_dl_ng.download import Download
 from tidal_dl_ng.logger import XStream, logger_gui
@@ -431,7 +430,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         # We build the menu.
         menu = QtWidgets.QMenu()
         menu.addAction("Download Playlist", lambda: self.thread_download_list_media(point))
-        menu.addAction("Copy Share URL", lambda: self.thread_copy_url_share(self.tr_lists_user, point))
+        menu.addAction("Copy Share URL", lambda: self.on_copy_url_share(self.tr_lists_user, point))
 
         menu.exec(self.tr_lists_user.mapToGlobal(point))
 
@@ -445,15 +444,12 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
 
         # We build the menu.
         menu = QtWidgets.QMenu()
-        menu.addAction("Copy Share URL", lambda: self.thread_copy_url_share(self.tr_results, point))
+        menu.addAction("Copy Share URL", lambda: self.on_copy_url_share(self.tr_results, point))
 
         menu.exec(self.tr_results.mapToGlobal(point))
 
     def thread_download_list_media(self, point: QtCore.QPoint):
         self.thread_it(self.on_download_list_media, point)
-
-    def thread_copy_url_share(self, tree_target: QtWidgets.QTreeWidget, point: QtCore.QPoint):
-        self.thread_it(self.on_copy_url_share, tree_target, point)
 
     def on_copy_url_share(self, tree_target: QtWidgets.QTreeWidget | QtWidgets.QTreeView, point: QtCore.QPoint = None):
         if isinstance(tree_target, QtWidgets.QTreeWidget):

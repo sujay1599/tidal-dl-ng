@@ -329,19 +329,21 @@ class Download:
         quality_audio: Quality | None = None,
         quality_video: QualityVideo | None = None,
         is_parent_album: bool = False,
+        list_position: int = 0,
+        list_total: int = 0,
     ) -> (bool, pathlib.Path):
         try:
             if media_id and media_type:
                 # If no media instance is provided, we need to create the media instance.
                 media = instantiate_media(self.session, media_type, media_id)
-            elif isinstance(media, Track):  # Check if media is available not deactivated / removed from TIDAL.
+            elif isinstance(media, Track | Video):  # Check if media is available not deactivated / removed from TIDAL.
                 if not media.available:
                     self.fn_logger.info(
-                        f"This track is not available for listening anymore on TIDAL. Skipping: {name_builder_item(media)}"
+                        f"This item is not available for listening anymore on TIDAL. Skipping: {name_builder_item(media)}"
                     )
 
                     return False, ""
-                else:
+                elif isinstance(media, Track):
                     # Re-create media instance with full album information
                     media = self.session.track(media.id, with_album=True)
             elif not media:
@@ -363,7 +365,9 @@ class Download:
             metadata_tags=[] if isinstance(media, Video) else media.media_metadata_tags,
             is_video=isinstance(media, Video),
         )
-        file_name_relative: str = format_path_media(file_template, media, self.settings.data.album_track_num_pad_min)
+        file_name_relative: str = format_path_media(
+            file_template, media, self.settings.data.album_track_num_pad_min, list_position, list_total
+        )
         path_media_dst: pathlib.Path = (
             pathlib.Path(self.path_base).expanduser() / (file_name_relative + file_extension_dummy)
         ).absolute()
@@ -714,14 +718,25 @@ class Download:
         quality_audio: Quality | None = None,
         quality_video: QualityVideo | None = None,
     ):
-        # If no media instance is provided, we need to create the media instance.
-        if media_id and media_type:
-            media = instantiate_media(self.session, media_type, media_id)
-        elif not media:
-            raise MediaMissing
+        try:
+            if media_id and media_type:
+                # If no media instance is provided, we need to create the media instance.
+                # Throws `tidalapi.exceptions.ObjectNotFound` if item is not available anymore.
+                media = instantiate_media(self.session, media_type, media_id)
+            elif isinstance(media, Album):  # Check if media is available not deactivated / removed from TIDAL.
+                if not media.available:
+                    self.fn_logger.info(
+                        f"This item is not available for listening anymore on TIDAL. Skipping: {name_builder_title(media)}"
+                    )
+
+                    return
+            elif not media:
+                raise MediaMissing
+        except:
+            return
 
         # Create file name and path
-        file_name_relative: str = format_path_media(file_template, media, self.settings.data.album_track_num_pad_min)
+        file_name_relative: str = format_path_media(file_template, media)
 
         # Get the name of the list and check, if videos should be included.
         list_media_name: str = name_builder_title(media)
@@ -745,7 +760,12 @@ class Download:
         )
 
         is_album: bool = isinstance(media, Album)
+        # TODO: Refactor strings to constants (also in cfg.py)
+        sort_by_track_num: bool = (
+            True if "album_track_num" in file_name_relative or "list_pos" in file_name_relative else False
+        )
         result_dirs: [pathlib.Path] = []
+        list_total: int = len(items)
 
         # Iterate through list items
         while not progress.finished:
@@ -760,8 +780,10 @@ class Download:
                         quality_video=quality_video,
                         download_delay=download_delay,
                         is_parent_album=is_album,
+                        list_position=count + 1,
+                        list_total=list_total,
                     )
-                    for item_media in items
+                    for count, item_media in enumerate(items)
                 ]
 
                 # Report results as they become available
@@ -789,11 +811,13 @@ class Download:
 
         # Create playlist file
         if self.settings.data.playlist_create:
-            self.playlist_populate(set(result_dirs), list_media_name, is_album)
+            self.playlist_populate(set(result_dirs), list_media_name, is_album, sort_by_track_num)
 
         self.fn_logger.info(f"Finished list '{list_media_name}'.")
 
-    def playlist_populate(self, dirs_scoped: [pathlib.Path], name_list: str, is_album: bool) -> [pathlib.Path]:
+    def playlist_populate(
+        self, dirs_scoped: [pathlib.Path], name_list: str, is_album: bool, sort_alphabetically
+    ) -> [pathlib.Path]:
         result: [pathlib.Path] = []
 
         # For each dir, which contains tracks
@@ -810,8 +834,11 @@ class Download:
             for extension_audio in AudioExtensions:
                 path_tracks = path_tracks + list(dir_scoped.glob(f"*{extension_audio!s}"))
 
-            # If it is not an album sort by modification time
-            if not is_album:
+            # Sort alphabetically, e.g. if items are prefixed with numbers
+            if sort_alphabetically:
+                path_tracks.sort()
+            elif not is_album:
+                # If it is not an album sort by modification time
                 path_tracks.sort(key=lambda x: os.path.getmtime(x))
 
             # Write data to m3u file

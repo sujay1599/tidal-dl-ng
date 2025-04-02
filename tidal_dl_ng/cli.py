@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 import signal
-import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
-from config import HandlingApp
 from rich.console import Group
 from rich.live import Live
 from rich.progress import (
@@ -20,7 +18,7 @@ from rich.progress import (
 from rich.table import Table
 
 from tidal_dl_ng import __version__
-from tidal_dl_ng.config import Settings, Tidal
+from tidal_dl_ng.config import HandlingApp, Settings, Tidal
 from tidal_dl_ng.constants import CTX_TIDAL, MediaType
 from tidal_dl_ng.download import Download
 from tidal_dl_ng.helper.path import get_format_template, path_file_settings
@@ -140,6 +138,8 @@ def _download(ctx: typer.Context, urls: list[str], try_login: bool = True) -> bo
                         media_type=media_type,
                         file_template=file_template,
                         download_delay=download_delay,
+                        quality_audio=settings.data.quality_audio,
+                        quality_video=settings.data.quality_video,
                     )
                 elif media_type in [MediaType.ALBUM, MediaType.PLAYLIST, MediaType.MIX, MediaType.ARTIST]:
                     item_ids: [int] = []
